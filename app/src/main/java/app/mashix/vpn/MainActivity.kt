@@ -12,7 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import com.wireguard.android.backend.GoBackend
 import com.wireguard.android.backend.Tunnel
-import com.wireguard.android.config.Config
+import com.wireguard.config.Config
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.StringReader
