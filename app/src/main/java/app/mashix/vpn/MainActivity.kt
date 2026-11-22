@@ -82,6 +82,8 @@ class MainActivity : ComponentActivity() {
         webView.settings.allowContentAccess = false
         webView.webChromeClient = WebChromeClient()
         webView.addJavascriptInterface(NativeBridge(), "MashixNative")
+        MashixVpnService.statusListener = { up, msg -> if (!isFinishing) notifyPage(up, msg) }
+        if (MashixVpnService.running.get()) notifyPage(true, "VPN работает в фоне")
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
@@ -137,6 +139,7 @@ class MainActivity : ComponentActivity() {
                 }
                 when (selectedKind) {
                     "wireguard" -> {
+                        stopService(Intent(this, MashixVpnService::class.java))
                         if (wireGuardConfig == null) {
                             notifyPage(false, "Сначала импортируй конфигурацию WireGuard")
                             return@runOnUiThread
@@ -144,7 +147,19 @@ class MainActivity : ComponentActivity() {
                         notifyPage(false, "Подключение WireGuard…")
                         askVpnPermission { startWireGuard() }
                     }
-                    "vless", "vmess", "trojan", "ss" -> notifyPage(false, "Соединение VLESS/vmess появится в следующем обновлении — пока работают WireGuard-серверы")
+                    "vless", "vmess", "trojan", "ss" -> {
+                        if (selectedPayload.isEmpty()) {
+                            notifyPage(false, "Сначала выбери сервер в разделе «Локации»")
+                            return@runOnUiThread
+                        }
+                        try {
+                            val config = XrayLinkParser.buildConfig(selectedPayload)
+                            notifyPage(false, "Подключение…")
+                            askVpnPermission { startVless(config) }
+                        } catch (e: Exception) {
+                            notifyPage(false, "Сервер не распознан: ${e.message ?: "ошибка"}")
+                        }
+                    }
                     else -> notifyPage(false, "Сначала выбери сервер в разделе «Локации»")
                 }
             }
@@ -269,6 +284,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** Запускает VPN-сервис с Xray-конфигурацией из выбранного VLESS/vmess/trojan/ss-сервера. */
+    private fun startVless(config: String) {
+        val intent = Intent(this, MashixVpnService::class.java).putExtra("config", config)
+        androidx.core.content.ContextCompat.startForegroundService(this, intent)
+    }
+
     private fun disconnectAll() {
         if (wgConnected) {
             worker.execute {
@@ -280,6 +301,7 @@ class MainActivity : ComponentActivity() {
             }
             wgConnected = false
         }
+        stopService(Intent(this, MashixVpnService::class.java))
         notifyPage(false, "VPN отключён")
     }
 
@@ -332,6 +354,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        MashixVpnService.statusListener = null
         webView.removeJavascriptInterface("MashixNative")
         webView.destroy()
         worker.shutdown()
@@ -352,11 +375,15 @@ object XrayLinkParser {
         val cfg = JSONObject()
         cfg.put("log", JSONObject().put("loglevel", "warning"))
         cfg.put("dns", JSONObject().put("servers", JSONArray().put("https://8.8.8.8/dns-query")))
-        val tunIn = JSONObject()
-            .put("protocol", "tun")
-            .put("tag", "tun-in")
-            .put("settings", JSONObject().put("mtu", 8500))
-        cfg.put("inbounds", JSONArray().put(tunIn))
+        // Ядро работает как локальный SOCKS5-сервер: сюда приходит трафик из
+        // hev-socks5-tunnel (TUN), наружу уходит через выбранный сервер
+        val socksIn = JSONObject()
+            .put("protocol", "socks")
+            .put("tag", "socks-in")
+            .put("listen", "127.0.0.1")
+            .put("port", 10808)
+            .put("settings", JSONObject().put("auth", "noauth").put("udp", true))
+        cfg.put("inbounds", JSONArray().put(socksIn))
         cfg.put(
             "outbounds",
             JSONArray()
@@ -368,7 +395,7 @@ object XrayLinkParser {
             .put(
                 JSONObject()
                     .put("type", "field")
-                    .put("inboundTag", JSONArray().put("tun-in"))
+                    .put("inboundTag", JSONArray().put("socks-in"))
                     .put("port", "53")
                     .put("outboundTag", "dns-out")
             )
