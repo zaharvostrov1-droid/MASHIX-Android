@@ -158,32 +158,46 @@ class MainActivity : ComponentActivity() {
             if (!safeUrl.startsWith("http://") && !safeUrl.startsWith("https://")) return
             val safeMode = if (mode == "refresh") "refresh" else "add"
             worker.execute {
-                try {
-                    val conn = URL(safeUrl).openConnection() as HttpURLConnection
-                    conn.connectTimeout = 15000
-                    conn.readTimeout = 15000
-                    conn.instanceFollowRedirects = true
-                    conn.setRequestProperty("User-Agent", "Karing/1.1.0")
-                    val body = conn.inputStream.use { inp ->
-                        BufferedReader(InputStreamReader(inp, Charsets.UTF_8)).readText()
+                // Панели отдают разные конфиги разным приложениям: перебираем несколько
+                // «личностей», пока какая-нибудь не вернёт хотя бы один реальный сервер.
+                val identities = listOf(
+                    "v2rayN/7.10.2", "Happ/1.5.1", "v2rayNG/1.10.10", "Streisand/2.0.0",
+                    "Hiddify/2.5.7", "Shadowrocket/2.2.62"
+                )
+                var best: JSONArray? = null
+                var lastNote = ""
+                for (ua in identities) {
+                    try {
+                        val conn = URL(safeUrl).openConnection() as HttpURLConnection
+                        conn.connectTimeout = 8000
+                        conn.readTimeout = 8000
+                        conn.instanceFollowRedirects = true
+                        conn.setRequestProperty("User-Agent", ua)
+                        val body = conn.inputStream.use { inp ->
+                            BufferedReader(InputStreamReader(inp, Charsets.UTF_8)).readText()
+                        }
+                        val servers = XrayLinkParser.parseSubscription(body)
+                        if (servers.length() > 0) {
+                            best = servers
+                            break
+                        }
+                        lastNote = "панель отвечает, но реальных серверов не отдаёт"
+                    } catch (e: Exception) {
+                        lastNote = "ошибка сети: ${e.message ?: "неизвестно"}"
                     }
-                    val servers = XrayLinkParser.parseSubscription(body)
-                    val payload = JSONObject()
-                        .put("ok", true)
-                        .put("url", safeUrl)
-                        .put("mode", safeMode)
-                        .put("servers", servers)
-                        .put("note", if (servers.length() > 0) "Найдено серверов: ${servers.length()}" else "Панель не отдала ни одного сервера этому приложению")
-                    emitSubResult(payload)
-                } catch (e: Exception) {
-                    val payload = JSONObject()
-                        .put("ok", false)
-                        .put("url", safeUrl)
-                        .put("mode", safeMode)
-                        .put("servers", JSONArray())
-                        .put("note", "Подписка не загрузилась: ${e.message ?: "ошибка сети"}")
-                    emitSubResult(payload)
                 }
+                val found = best
+                val payload = JSONObject()
+                    .put("ok", found != null)
+                    .put("url", safeUrl)
+                    .put("mode", safeMode)
+                    .put("servers", found ?: JSONArray())
+                    .put(
+                        "note",
+                        if (found != null) "Найдено серверов: ${found.length()}"
+                        else "Панель не отдала ни одного реального сервера (проверено 6 форматов клиентов). Проверь подписку у провайдера — $lastNote"
+                    )
+                emitSubResult(payload)
             }
         }
 
